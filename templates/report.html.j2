@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Stocks Near Support</title>
+<style>
+  :root { --border: #e2e2e2; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    margin: 0; padding: 24px; color: #1a1a1a; background: #fafafa;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: #666; font-size: 13px; margin-bottom: 16px; }
+  table { border-collapse: collapse; width: 100%; background: #fff; font-size: 13px; }
+  thead th {
+    position: sticky; top: 0; background: #1f2937; color: #fff; text-align: left;
+    padding: 8px 10px; cursor: pointer; user-select: none; white-space: nowrap;
+    border-bottom: 2px solid #111827;
+  }
+  thead th:hover { background: #374151; }
+  thead th::after { content: " \25B4\25BE"; opacity: 0.35; font-size: 10px; }
+  tbody td { padding: 6px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  tbody tr:nth-child(even) { background: #f6f7f9; }
+  tbody tr:hover { background: #eef2ff; }
+  td.num { text-align: right; font-family: "SF Mono", ui-monospace, "Cascadia Code", Consolas, monospace; }
+  td.neg { color: #b91c1c; }
+  td.score { font-weight: 700; color: #1f2937; }
+  td.reasons { color: #444; font-size: 12px; white-space: nowrap; }
+  .rating { display: inline-block; padding: 2px 8px; border-radius: 10px; color: #fff; font-weight: 600; font-size: 12px; }
+  .r-strongbuy { background: #0a7d28; }
+  .r-buy       { background: #3aa856; }
+  .r-hold      { background: #8a8a8a; }
+  .r-sell      { background: #d97706; }
+  .r-strongsell{ background: #b91c1c; }
+  .pill { display: inline-block; padding: 1px 6px; border-radius: 4px; background: #eef; color: #334; font-size: 11px; }
+  footer { margin-top: 16px; color: #777; font-size: 12px; }
+</style>
+</head>
+<body>
+  <h1>Stocks Near Support</h1>
+  <div class="sub">{{ row_count }} rows &middot; {{ us_count }} US &middot; {{ eu_count }} EU &middot; near-support threshold &le; {{ threshold }}% &middot; ranked by composite Score</div>
+
+  <table id="report">
+    <thead>
+      <tr>
+        <th data-type="num">Score</th>
+        <th data-type="text">Ticker</th>
+        <th data-type="text">Name</th>
+        <th data-type="text">Market</th>
+        <th data-type="num">Last</th>
+        <th data-type="num">Support</th>
+        <th data-type="num">Dist %</th>
+        <th data-type="num">52w High</th>
+        <th data-type="num">Drawdown</th>
+        <th data-type="num">Days since high</th>
+        <th data-type="text">Rating</th>
+        <th data-type="num"># Analysts</th>
+        <th data-type="num">Community</th>
+        <th data-type="text">Reasons</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for r in rows %}
+      <tr>
+        <td class="num score">{{ "%.1f"|format(r.score) }}</td>
+        <td>{{ r.ticker }}</td>
+        <td>{{ r.name }}</td>
+        <td><span class="pill">{{ r.market }}</span></td>
+        <td class="num">{{ "%.2f"|format(r.last_close) }}</td>
+        <td class="num">{{ "%.2f"|format(r.support) }}</td>
+        <td class="num">{{ "%.2f"|format(r.distance_pct) }}</td>
+        <td class="num">{{ "%.2f"|format(r.high_52w) }}</td>
+        <td class="num neg">{{ "%.2f"|format(-r.drawdown_pct) }}%</td>
+        <td class="num">{{ r.days_since_high }}</td>
+        <td><span class="rating {{ r.rating_class }}">{{ r.rating }}</span></td>
+        <td class="num">{{ r.num_analysts }}</td>
+        <td class="num">{{ "%.1f"|format(r.community) }}</td>
+        <td class="reasons">{{ r.reasons }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+
+  <footer>Generated {{ generated_utc }} UTC &middot; NEAR_THRESHOLD_PCT = {{ threshold }}</footer>
+
+<script>
+(function () {
+  var table = document.getElementById("report");
+  var headers = table.tHead.rows[0].cells;
+  var sortState = {};
+  for (var i = 0; i < headers.length; i++) {
+    (function (idx) {
+      headers[idx].addEventListener("click", function () {
+        var type = headers[idx].getAttribute("data-type");
+        var asc = !(sortState[idx] === true);
+        sortState = {}; sortState[idx] = asc;
+        var body = table.tBodies[0];
+        var rows = Array.prototype.slice.call(body.rows);
+        rows.sort(function (a, b) {
+          var x = a.cells[idx].textContent.trim();
+          var y = b.cells[idx].textContent.trim();
+          if (type === "num") {
+            var nx = parseFloat(x.replace(/[^0-9.\-]/g, "")) || 0;
+            var ny = parseFloat(y.replace(/[^0-9.\-]/g, "")) || 0;
+            return asc ? nx - ny : ny - nx;
+          }
+          return asc ? x.localeCompare(y) : y.localeCompare(x);
+        });
+        for (var r = 0; r < rows.length; r++) body.appendChild(rows[r]);
+      });
+    })(i);
+  }
+})();
+</script>
+</body>
+</html>

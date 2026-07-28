@@ -1,0 +1,7 @@
+yfinance
+pandas
+lxml
+requests
+python-dotenv
+jinja2
+tqdm

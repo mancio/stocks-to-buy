@@ -1,0 +1,8 @@
+.env
+.cache/
+.venv/
+__pycache__/
+*.pyc
+report.html
+report_fallen.html
+run.log
