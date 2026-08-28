@@ -6,3 +6,5 @@ __pycache__/
 report.html
 report_fallen.html
 run.log
+
+*.log

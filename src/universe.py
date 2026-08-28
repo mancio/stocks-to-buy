@@ -17,6 +17,7 @@ import pandas as pd
 import requests
 
 from . import config
+from .symbols import yahoo_variants
 
 SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 STOXX600_URL = "https://en.wikipedia.org/wiki/STOXX_Europe_600"
@@ -168,16 +169,17 @@ def get_stoxx600() -> pd.DataFrame:
         name = str(r[name_col]).strip() if name_col else raw_ticker
         if not raw_ticker or raw_ticker.lower() == "nan":
             continue
-        # Strip any pre-existing exchange/Bloomberg suffix (e.g. "NESN SW",
-        # "SAP:GR", "ABI.BR") down to the base symbol.
-        base = raw_ticker.split(":")[0].split(" ")[0].split(".")[0].strip()
         suffix = COUNTRY_SUFFIX.get(country)
         if not suffix:
             dropped[country] = dropped.get(country, 0) + 1
             continue
+        # "VOLV B" -> VOLV-B.ST (share class), "SAP" -> SAP.DE.
+        variants = yahoo_variants(raw_ticker, suffix)
+        if not variants:
+            continue
         rows.append(
             {
-                "ticker": f"{base}{suffix}",
+                "ticker": variants[0],
                 "name": name,
                 "exchange": suffix.lstrip("."),
                 "market": "EU",

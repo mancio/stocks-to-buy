@@ -24,10 +24,19 @@
   tbody td { padding: 6px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
   tbody tr:nth-child(even) { background: #f6f7f9; }
   tbody tr:hover { background: #eef2ff; }
+  tbody tr.selected,
+  tbody tr.selected:nth-child(even),
+  tbody tr.selected:hover { background: #dbeafe; box-shadow: inset 3px 0 0 #2563eb; }
   td.num { text-align: right; font-family: "SF Mono", ui-monospace, "Cascadia Code", Consolas, monospace; }
   td.neg { color: #b91c1c; }
   td.score { font-weight: 700; color: #1f2937; }
   td.reasons { color: #444; font-size: 12px; white-space: nowrap; }
+  .open-details {
+    background: none; border: 0; padding: 0; font: inherit; color: #1d4ed8;
+    cursor: pointer; text-align: left;
+  }
+  .open-details:hover { text-decoration: underline; }
+  .open-details .ico { opacity: 0.55; margin-left: 4px; font-size: 11px; }
   .rating { display: inline-block; padding: 2px 8px; border-radius: 10px; color: #fff; font-weight: 600; font-size: 12px; }
   .r-strongbuy { background: #0a7d28; }
   .r-buy       { background: #3aa856; }
@@ -36,11 +45,55 @@
   .r-strongsell{ background: #b91c1c; }
   .pill { display: inline-block; padding: 1px 6px; border-radius: 4px; background: #eef; color: #334; font-size: 11px; }
   footer { margin-top: 16px; color: #777; font-size: 12px; }
+  .hint { color: #666; font-size: 12px; margin-bottom: 12px; }
+
+  /* ---- per-stock detail panel ---- */
+  #overlay {
+    position: fixed; inset: 0; background: rgba(17, 24, 39, 0.55);
+    display: none; align-items: flex-start; justify-content: center;
+    padding: 32px 16px; overflow-y: auto; z-index: 50;
+  }
+  #overlay.open { display: flex; }
+  #panel {
+    background: #fff; border-radius: 8px; width: min(880px, 100%);
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.3); padding: 20px 24px 24px;
+  }
+  #panel h2 { margin: 0; font-size: 18px; }
+  .panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+  .panel-head .meta { color: #666; font-size: 12px; margin-top: 4px; }
+  #close-panel { background: none; border: 0; font-size: 22px; line-height: 1; cursor: pointer; color: #6b7280; }
+  #close-panel:hover { color: #111827; }
+  .section { margin-top: 20px; }
+  .section h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; color: #6b7280; margin: 0 0 8px; }
+  .kv { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px 16px; }
+  .kv div { font-size: 13px; }
+  .kv span.k { color: #6b7280; display: block; font-size: 11px; }
+  .kv span.v { font-family: "SF Mono", ui-monospace, Consolas, monospace; }
+  .meter { display: grid; grid-template-columns: 90px 1fr 46px; align-items: center; gap: 8px; margin-bottom: 5px; font-size: 12px; }
+  .meter .bar { background: #eef0f4; border-radius: 4px; height: 14px; overflow: hidden; }
+  .meter .bar > i { display: block; height: 100%; }
+  .b-strongBuy { background: #0a7d28; }
+  .b-buy       { background: #3aa856; }
+  .b-hold      { background: #8a8a8a; }
+  .b-sell      { background: #d97706; }
+  .b-strongSell{ background: #b91c1c; }
+  .meter .n { text-align: right; font-family: "SF Mono", ui-monospace, Consolas, monospace; }
+  .tabs { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; margin-bottom: 8px; }
+  .tabs button { background: #fff; border: 0; padding: 4px 12px; font-size: 12px; cursor: pointer; }
+  .tabs button.active { background: #1f2937; color: #fff; }
+  .tabs button[disabled] { color: #b0b4bb; cursor: not-allowed; }
+  table.bs { font-size: 12px; }
+  table.bs thead th { position: static; cursor: default; background: #f3f4f6; color: #374151; }
+  table.bs thead th::after { content: ""; }
+  table.bs td.lbl { white-space: nowrap; }
+  table.bs tr.total td { font-weight: 700; background: #f9fafb; }
+  .nodata { color: #6b7280; font-size: 12px; margin-top: 6px; }
 </style>
 </head>
 <body>
   <h1>Stocks Near Support</h1>
   <div class="sub">{{ row_count }} rows &middot; {{ us_count }} US &middot; {{ eu_count }} EU &middot; near-support threshold &le; {{ threshold }}% &middot; ranked by composite Score</div>
+  <div class="hint">Click a row to keep it highlighted (only one row at a time). Click a ticker or company name to open its details: balance sheet with short- and long-term assets/liabilities, plus the analyst buy/sell breakdown.</div>
 
   <table id="report">
     <thead>
@@ -63,10 +116,10 @@
     </thead>
     <tbody>
     {% for r in rows %}
-      <tr>
+      <tr data-ticker="{{ r.ticker }}">
         <td class="num score">{{ "%.1f"|format(r.score) }}</td>
-        <td>{{ r.ticker }}</td>
-        <td>{{ r.name }}</td>
+        <td><button type="button" class="open-details" data-ticker="{{ r.ticker }}">{{ r.ticker }}<span class="ico">&#9432;</span></button></td>
+        <td><button type="button" class="open-details" data-ticker="{{ r.ticker }}">{{ r.name }}</button></td>
         <td><span class="pill">{{ r.market }}</span></td>
         <td class="num">{{ "%.2f"|format(r.last_close) }}</td>
         <td class="num">{{ "%.2f"|format(r.support) }}</td>
@@ -83,11 +136,31 @@
     </tbody>
   </table>
 
-  <footer>Generated {{ generated_utc }} UTC &middot; NEAR_THRESHOLD_PCT = {{ threshold }}</footer>
+  <footer>Generated {{ generated_utc }} UTC &middot; NEAR_THRESHOLD_PCT = {{ threshold }} &middot; balance sheet and analyst buckets fetched live from Yahoo Finance / Finnhub &mdash; no estimated or placeholder values</footer>
 
+  <div id="overlay" role="dialog" aria-modal="true" aria-labelledby="panel-title">
+    <div id="panel">
+      <div class="panel-head">
+        <div>
+          <h2 id="panel-title"></h2>
+          <div class="meta" id="panel-meta"></div>
+        </div>
+        <button type="button" id="close-panel" aria-label="Close">&times;</button>
+      </div>
+      <div id="panel-body"></div>
+    </div>
+  </div>
+
+<script type="application/json" id="details-data">{{ details|tojson }}</script>
+<script type="application/json" id="line-items">{{ line_items|tojson }}</script>
 <script>
 (function () {
   var table = document.getElementById("report");
+  var DETAILS = JSON.parse(document.getElementById("details-data").textContent);
+  var LINE_ITEMS = JSON.parse(document.getElementById("line-items").textContent);
+  var TOTAL_KEYS = { total_assets: 1, total_liabilities: 1, equity: 1 };
+
+  /* ---------- click-to-sort ---------- */
   var headers = table.tHead.rows[0].cells;
   var sortState = {};
   for (var i = 0; i < headers.length; i++) {
@@ -112,6 +185,176 @@
       });
     })(i);
   }
+
+  /* ---------- single-row selection ---------- */
+  var selectedRow = null;
+  table.tBodies[0].addEventListener("click", function (ev) {
+    var tr = ev.target.closest("tr");
+    if (!tr) return;
+    if (selectedRow && selectedRow !== tr) selectedRow.classList.remove("selected");
+    tr.classList.add("selected");
+    selectedRow = tr;
+    var trigger = ev.target.closest(".open-details");
+    if (trigger) openPanel(trigger.getAttribute("data-ticker"));
+  });
+
+  /* ---------- detail panel ---------- */
+  var overlay = document.getElementById("overlay");
+  var panelTitle = document.getElementById("panel-title");
+  var panelMeta = document.getElementById("panel-meta");
+  var panelBody = document.getElementById("panel-body");
+  var current = null;
+  var period = "quarterly";
+
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined) n.textContent = text;
+    return n;
+  }
+
+  function section(title) {
+    var s = el("div", "section");
+    s.appendChild(el("h3", null, title));
+    return s;
+  }
+
+  function fmtMoney(v) {
+    if (v === null || v === undefined) return "n/a";
+    var abs = Math.abs(v), unit = "", div = 1;
+    if (abs >= 1e12) { unit = "T"; div = 1e12; }
+    else if (abs >= 1e9) { unit = "B"; div = 1e9; }
+    else if (abs >= 1e6) { unit = "M"; div = 1e6; }
+    else if (abs >= 1e3) { unit = "K"; div = 1e3; }
+    return (v / div).toFixed(2) + unit;
+  }
+
+  function num(v, digits) {
+    return (v === null || v === undefined) ? "n/a" : v.toFixed(digits);
+  }
+
+  function metricsSection(d) {
+    var s = section("Key metrics");
+    var kv = el("div", "kv");
+    [
+      ["Score", num(d.score, 1)],
+      ["Last close", num(d.last_close, 2)],
+      ["Support", num(d.support, 2)],
+      ["Distance to support", num(d.distance_pct, 2) + "%"],
+      ["52w high", num(d.high_52w, 2)],
+      ["Drawdown", "-" + num(d.drawdown_pct, 2) + "%"],
+      ["Days since high", String(d.days_since_high)],
+      ["Community", num(d.community, 1)]
+    ].forEach(function (p) {
+      var box = el("div");
+      box.appendChild(el("span", "k", p[0]));
+      box.appendChild(el("span", "v", p[1]));
+      kv.appendChild(box);
+    });
+    s.appendChild(kv);
+    if (d.reasons) s.appendChild(el("div", "nodata", d.reasons));
+    return s;
+  }
+
+  function analystSection(d) {
+    var s = section("Analyst recommendations (" + d.num_analysts + " analysts)");
+    if (!d.buckets || !d.buckets.length) {
+      s.appendChild(el("div", "nodata", "The data source did not return a per-bucket breakdown for this ticker."));
+      return s;
+    }
+    var max = d.buckets.reduce(function (m, b) { return Math.max(m, b.count); }, 0) || 1;
+    d.buckets.forEach(function (b) {
+      var row = el("div", "meter");
+      row.appendChild(el("span", null, b.label));
+      var bar = el("div", "bar");
+      var fill = el("i", "b-" + b.key);
+      fill.style.width = (b.count / max * 100).toFixed(1) + "%";
+      bar.appendChild(fill);
+      row.appendChild(bar);
+      row.appendChild(el("span", "n", String(b.count)));
+      s.appendChild(row);
+    });
+    s.appendChild(el("div", "nodata", "Consensus: " + d.rating));
+    return s;
+  }
+
+  function balanceSheetSection(d) {
+    var f = d.fundamentals;
+    var s = section("Balance sheet - short & long term assets and liabilities" +
+      (f && f.currency ? " (" + f.currency + ")" : ""));
+    if (!f) {
+      s.appendChild(el("div", "nodata", "Yahoo Finance reports no balance sheet for this ticker."));
+      return s;
+    }
+
+    var tabs = el("div", "tabs");
+    [["quarterly", "Quarterly"], ["annual", "Annual"]].forEach(function (t) {
+      var btn = el("button", period === t[0] ? "active" : null, t[1]);
+      btn.disabled = !(f[t[0]] && f[t[0]].length);
+      btn.addEventListener("click", function () { period = t[0]; renderPanel(); });
+      tabs.appendChild(btn);
+    });
+    s.appendChild(tabs);
+
+    var periods = (f[period] && f[period].length) ? f[period]
+      : ((f.quarterly && f.quarterly.length) ? f.quarterly : f.annual);
+    if (!periods || !periods.length) {
+      s.appendChild(el("div", "nodata", "No periods reported."));
+      return s;
+    }
+
+    var tbl = el("table", "bs");
+    var thead = el("thead");
+    var hr = el("tr");
+    hr.appendChild(el("th", null, "Line item"));
+    periods.forEach(function (p) { hr.appendChild(el("th", null, p.date)); });
+    thead.appendChild(hr);
+    tbl.appendChild(thead);
+
+    var tbody = el("tbody");
+    LINE_ITEMS.forEach(function (item) {
+      var present = periods.some(function (p) { return p.values[item.key] !== undefined; });
+      if (!present) return;
+      var tr = el("tr", TOTAL_KEYS[item.key] ? "total" : null);
+      tr.appendChild(el("td", "lbl", item.label));
+      periods.forEach(function (p) {
+        tr.appendChild(el("td", "num", fmtMoney(p.values[item.key])));
+      });
+      tbody.appendChild(tr);
+    });
+    tbl.appendChild(tbody);
+    s.appendChild(tbl);
+    s.appendChild(el("div", "nodata", "As reported by Yahoo Finance; line items the issuer does not report are omitted, never zero-filled."));
+    return s;
+  }
+
+  function renderPanel() {
+    var d = DETAILS[current];
+    if (!d) return;
+    panelTitle.textContent = d.ticker + " - " + d.name;
+    panelMeta.textContent = d.market + " \u00b7 consensus " + d.rating + " \u00b7 " + d.num_analysts + " analysts";
+    panelBody.textContent = "";
+    panelBody.appendChild(metricsSection(d));
+    panelBody.appendChild(analystSection(d));
+    panelBody.appendChild(balanceSheetSection(d));
+  }
+
+  function openPanel(ticker) {
+    if (!DETAILS[ticker]) return;
+    current = ticker;
+    period = "quarterly";
+    renderPanel();
+    overlay.classList.add("open");
+  }
+
+  function closePanel() {
+    overlay.classList.remove("open");
+    current = null;
+  }
+
+  document.getElementById("close-panel").addEventListener("click", closePanel);
+  overlay.addEventListener("click", function (ev) { if (ev.target === overlay) closePanel(); });
+  document.addEventListener("keydown", function (ev) { if (ev.key === "Escape") closePanel(); });
 })();
 </script>
 </body>

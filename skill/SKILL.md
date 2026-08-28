@@ -32,8 +32,11 @@ No mock data. If a required secret is missing, **stop and ask the user** to prov
 |---|---|---|---|
 | S&P 500 constituents | Wikipedia `https://en.wikipedia.org/wiki/List_of_S%26P_500_companies` | none | parse with `pandas.read_html` |
 | STOXX Europe 600 constituents | Wikipedia `https://en.wikipedia.org/wiki/STOXX_Europe_600` | none | parse with `pandas.read_html`; ticker column needs exchange suffix mapping (see below) |
+| Yahoo symbol for a constituent | Yahoo `https://query2.finance.yahoo.com/v1/finance/search` | none | second naming source when Wikipedia's ticker is not a Yahoo symbol (see "Symbol resolution") |
 | Daily OHLC history | `yfinance` (Yahoo Finance) | none | batch download, `period="1y"`, `interval="1d"` |
 | Analyst consensus rating | Finnhub `/stock/recommendation` endpoint | **API key required** → ask user for `FINNHUB_API_KEY` | returns monthly buckets `strongBuy/buy/hold/sell/strongSell`; use most recent row |
+| Balance sheet | `yfinance.Ticker(sym).balance_sheet` / `.quarterly_balance_sheet` | none | detail-panel assets & liabilities |
+| Community attention | ApeWisdom `https://apewisdom.io/api/v1.0/filter/all-stocks` | none | US-only Reddit mention counts |
 
 If Finnhub rate-limits (60 req/min on free tier), throttle with `time.sleep(1.1)`
 between calls and cache responses to `.cache/finnhub/{symbol}.json` for 24 h.
@@ -46,7 +49,12 @@ Switzerland → .SW     UK          → .L      Italy       → .MI
 Spain       → .MC     Sweden      → .ST     Denmark     → .CO
 Belgium     → .BR     Finland     → .HE     Norway      → .OL
 Ireland     → .IR     Portugal    → .LS     Austria     → .VI
+Poland      → .WA     Luxembourg  → .LU     Czechia     → .PR
+Greece      → .AT
 ```
+
+The suffix alone is not enough: Wikipedia's ticker column also carries share
+classes and local spellings. See **Symbol resolution** below.
 
 ## Support algorithm
 
@@ -71,18 +79,23 @@ the human label and the total count `strongBuy+buy+hold+sell+strongSell`.
 ```
 /
 ├── .env.example          # FINNHUB_API_KEY=, NEAR_THRESHOLD_PCT=5.0
-├── requirements.txt      # yfinance, pandas, lxml, requests, python-dotenv, jinja2, tqdm
+├── requirements.txt      # yfinance, pandas, lxml, requests, python-dotenv, jinja2, tqdm, pytest
 ├── src/
 │   ├── __init__.py
 │   ├── config.py         # loads .env, exposes constants
 │   ├── universe.py       # get_sp500() + get_stoxx600() → DataFrame[ticker, name, exchange]
+│   ├── symbols.py        # Wikipedia ticker → Yahoo symbol resolution
 │   ├── prices.py         # download_history(tickers) → dict[str, DataFrame]
 │   ├── support.py        # compute_support(df) → (support, last_close, distance_pct) or None
 │   ├── ratings.py        # fetch_rating(symbol) with on-disk cache
+│   ├── fundamentals.py   # fetch_fundamentals(symbol) → balance sheet
+│   ├── community.py      # ApeWisdom attention signal
+│   ├── signals.py        # composite score + reasons
 │   ├── report.py         # renders templates/report.html.j2 → report.html
 │   └── main.py           # orchestrates the pipeline with tqdm progress bars
 ├── templates/
 │   └── report.html.j2    # standalone HTML, inline CSS, sortable via small vanilla JS
+├── tests/                # pytest suite (see "Tests")
 └── report.html           # output (gitignored)
 ```
 
@@ -90,18 +103,21 @@ the human label and the total count `strongBuy+buy+hold+sell+strongSell`.
 
 1. **Ask the user for the Finnhub API key** before writing any code. Do not proceed without it. Tell them to register at `https://finnhub.io/register` (free) and paste the key. Save to `.env`.
 2. Create `requirements.txt` and install: `python -m venv .venv && .venv\Scripts\pip install -r requirements.txt` (Windows / PowerShell).
-3. Implement modules in the order: `config → universe → prices → support → ratings → report → main`.
+3. Implement modules in the order: `config → symbols → universe → prices → support → ratings → fundamentals → community → signals → report → main`.
 4. Each module gets a `__main__` block with a tiny smoke test (e.g. `python -m src.universe` prints the first 10 rows).
 5. `main.py` flow:
    - load universe (US + EU concatenated)
    - batch-download prices via `yfinance.download(tickers, period="1y", group_by="ticker", auto_adjust=False, threads=True)`
+   - **re-resolve every ticker that returned no history** and download the recovered symbols
    - for each ticker compute support; keep only "near support"
    - compute 52w high, drawdown %, and days-since-high from the same history (no extra fetch)
    - fetch ratings for the survivors only (minimises API calls)
    - **drop every row whose rating is not `Buy` or `Strong Buy`**
-   - sort ascending by last close
+   - fetch the community signal, then score and rank the survivors
+   - fetch balance-sheet fundamentals for the survivors only
    - render the single `report.html`
 6. Print final summary: `"Wrote report.html with N rows (X US, Y EU)"`.
+7. Run `python -m pytest tests -q` — the suite must be green before the build is done.
 
 ## HTML template requirements
 
@@ -109,11 +125,115 @@ the human label and the total count `strongBuy+buy+hold+sell+strongSell`.
 - Sticky header, zebra rows, monospace numerics, right-aligned numbers.
 - Color the rating cell: Strong Buy = `#0a7d28`, Buy = `#3aa856`, Hold = `#8a8a8a`, Sell = `#d97706`, Strong Sell = `#b91c1c` (white text on dark backgrounds).
 - Tiny vanilla-JS click-to-sort on every column header (no libraries).
+- **Row selection**: clicking anywhere in a row highlights it and keeps it
+  highlighted; selecting another row clears the previous one (single-select,
+  never multi-select). Highlight = `#dbeafe` background + `inset 3px 0 0 #2563eb`
+  left marker, and it must win over the zebra and `:hover` rules.
+- **Detail panel**: the Ticker and Name cells are buttons with an info icon
+  (`&#9432;`). Clicking either opens a modal (TradingView-style) for that stock,
+  built entirely from the embedded per-ticker JSON. Sections, in order:
+  1. **Key metrics** — score, last, support, distance, 52w high, drawdown,
+     days since high, community, reasons.
+  2. **Analyst recommendations** — one horizontal bar per bucket
+     (Strong Buy / Buy / Hold / Sell / Strong Sell) with the **actual analyst
+     count** next to it, plus the consensus label. Bars use the rating colors.
+  3. **Balance sheet** — short- and long-term assets and liabilities with a
+     Quarterly / Annual toggle and up to 4 reported periods as columns.
+  Close via the X button, a click on the backdrop, or Escape.
+- Panel content is built with `document.createElement` + `textContent` (never
+  `innerHTML`) so issuer-supplied names cannot inject markup.
 - Footer shows generation timestamp (UTC) and the `NEAR_THRESHOLD_PCT` used.
+
+## Detail-panel data (real only)
+
+| Panel section | Source | Module |
+|---|---|---|
+| Analyst buckets + counts | Finnhub `/stock/recommendation` (US) or Yahoo `recommendations` (EU) — the same payload already used for the consensus label | `src/ratings.py` (`Rating.counts`) |
+| Balance sheet | `yfinance.Ticker(sym).balance_sheet` / `.quarterly_balance_sheet` | `src/fundamentals.py` |
+
+Line items extracted (Yahoo row names in parentheses): total current assets
+(`Current Assets`), total non-current assets (`Total Non Current Assets`), total
+assets (`Total Assets`), total current liabilities (`Current Liabilities`), total
+non-current liabilities (`Total Non Current Liabilities Net Minority Interest`),
+total liabilities (`Total Liabilities Net Minority Interest`), total equity
+(`Stockholders Equity`), total debt (`Total Debt`), cash & equivalents
+(`Cash And Cash Equivalents`).
+
+**Real data only.** A line item Yahoo does not report is *omitted from the
+payload and from the rendered table* — never zero-filled, interpolated, or
+estimated. A ticker with no balance sheet at all shows an explicit "no balance
+sheet" message. Same for the analyst breakdown: if the source returns no
+per-bucket counts, say so instead of inventing a distribution. Fundamentals are
+cached to `.cache/fundamentals/{symbol}.json` for 24 h and fetched **only for the
+rows that survive every filter**.
+
+### Self-contradicting source totals
+
+Yahoo occasionally publishes a total that contradicts its own components
+(`ALC.SW` reports total liabilities equal to total assets). A reported total is
+**dropped** — never silently corrected — when it deviates by more than
+`TOTAL_TOLERANCE` (1%) from:
+
+- `total_assets` vs `current_assets + non_current_assets`
+- `total_assets` vs `total_liabilities + equity_gross`
+- `total_liabilities` vs `current_liabilities + non_current_liabilities`
+
+The drop is logged and the panel then shows the components only. `equity_gross`
+(`Total Equity Gross Minority Interest`) is stored alongside `equity`
+(`Stockholders Equity`) so the identity $A = L + E$ is verifiable; minority
+interest can be negative, so `L + stockholders equity <= A` is **not** a valid
+assumption.
+
+## Symbol resolution (`src/symbols.py`)
+
+Wikipedia is the only *constituent list*, but it is **not** the only naming
+source. Its tickers are exchange-local (`VOLV B`, `NDA FI`, `BT.A`) while Yahoo
+wants `VOLV-B.ST`, `NDA-FI.HE`, `BT-A.L`, and some constituents are listed under
+a completely different symbol (`BNPP` -> `BNP.PA`, `FERR` -> `RACE.MI`,
+`DANO` -> `BN.PA`). Resolution runs in stages, cheapest first:
+
+1. **Mechanical** (`yahoo_variants`): join the share-class token with a dash and
+   append the country suffix. This is what the universe emits.
+2. **Plain base**: retry `BASE + suffix` for anything that returned no history.
+3. **Name search**: Yahoo's free `/v1/finance/search` endpoint queried with the
+   company name, then its accent-free spelling (Yahoo returns 0 hits for
+   "Crédit Agricole"), then the bare base symbol.
+4. **Glued share class**: `HMB` -> `HM-B`, accepted only if a search for that
+   exact symbol returns an equity whose name matches the constituent.
+
+A candidate is accepted only when it is an **equity on the expected exchange**
+and either its base symbol matches *and* the names agree, or the name alone is a
+close match (`NAME_MATCH_THRESHOLD`). Ties go to the shortest symbol, which is
+the primary line rather than a secondary listing (`AKRBP.OL`, not `AKRBPO.OL`).
+Every accepted symbol still has to return real price history before it is used,
+and anything unresolved stays dropped. Search results are cached to
+`.cache/symbols/` for 30 days; empty responses are **not** cached, since they are
+usually throttling rather than "no such company".
+
+This recovers about half of the constituents Yahoo does not recognise under
+Wikipedia's spelling (104 misses -> ~50 recovered on a recent run).
+
+## Tests (`tests/`, pytest)
+
+`python -m pytest tests -q` — no network, no API key, runs in about a second.
+
+| File | Covers |
+|---|---|
+| `test_support.py` | fractal swing lows, 1.5% clustering, nearest support below last close, distance %, 52w high, drawdown, days-since-high — on synthetic series with hand-computed answers |
+| `test_signals.py` | each sub-score curve, the 50-day momentum ratio, weights summing to 1.0, the composite as a weighted sum, 0..100 bounds, reasons string |
+| `test_ratings.py` | winning bucket, tie-break order, total = sum of buckets, counts preserved, empty -> unrated |
+| `test_fundamentals.py` | NaN/inf rejection, omitted (not zero-filled) cells, period cap, dropping self-contradicting totals, plus accounting identities across every **real cached** balance sheet |
+| `test_symbols.py` | mechanical variants, share-class spellings, accent folding, name similarity, match acceptance/rejection rules, shortest-symbol tie-break, the verified glued-class fallback — all against recorded Yahoo payloads, no network |
+| `test_universe.py` | Wikipedia -> Yahoo ticker construction, unmapped-country drops, and the pipeline's missing-ticker recovery (base retry, name search, no-collision renames, unresolvable rows left alone) |
+| `test_report_numbers.py` | re-derives every figure in the generated `report.html`: distance % and drawdown % from their inputs, support below last close and within threshold, analyst total = sum of buckets, consensus = winning bucket, Buy/Strong Buy filter, score reproducible from its components (implied momentum must land in 0..1), ranking order, and every rendered cell matching the embedded detail payload |
+
+The report-level tests **skip** (not fail) when `report.html` or the caches are
+absent, so a clean checkout still passes.
 
 ## Hard rules
 
 - **Never** fabricate prices, ratings, or constituents. If a fetch fails for a ticker, log a warning and skip it.
+- **Never** hard-code a Wikipedia-ticker → Yahoo-symbol mapping. Resolve it from a live source, require the match to be verifiable (right exchange, matching name), and confirm it by actually downloading price history.
 - **Never** commit `.env` or the `.cache/` folder — add both to `.gitignore`.
 - If Wikipedia layout changes and parsing fails, raise a clear error pointing at the offending URL; do not fall back to a hard-coded list.
 - Keep dependencies to the ones in `requirements.txt`; do not add paid SDKs.
@@ -242,20 +362,25 @@ additions; the middle columns match the base skill's exact order.
 
 ```
 src/
-├── signals.py    # composite score + per-signal breakdown + reasons
-├── community.py  # ApeWisdom attention signal (US only), cached 6 h
-└── ...           # config, universe, prices, support, ratings, report, main
+├── signals.py       # composite score + per-signal breakdown + reasons
+├── community.py     # ApeWisdom attention signal (US only), cached 6 h
+├── fundamentals.py  # Yahoo balance sheet for the detail panel, cached 24 h
+├── symbols.py       # Wikipedia ticker -> Yahoo symbol resolution, cached 30 d
+└── ...              # config, universe, prices, support, ratings, report, main
 .cache/
-├── finnhub/      # US ratings, 24 h
-├── yahoo/        # EU (+ US fallback) ratings, 24 h
-└── apewisdom/    # community map, 6 h
+├── finnhub/         # US ratings, 24 h
+├── yahoo/           # EU (+ US fallback) ratings, 24 h
+├── fundamentals/    # balance sheets, 24 h
+├── symbols/         # Yahoo symbol search results, 30 d
+└── apewisdom/       # community map, 6 h
 ```
 
 ## Known data-quality notes
 
-- ~120 EU tickers fail Yahoo price download because Wikipedia's ticker format
-  differs from Yahoo's (dual-class `VOLV`→`VOLV-B`, `ERICB`→`ERIC-B`, base-symbol
-  cases like `BNPP`→`BNP`). Per the hard rules these are logged and skipped, not
+- Constituents Yahoo does not list under Wikipedia's spelling are recovered by
+  `src/symbols.py` (see above). The remainder are genuinely unavailable —
+  delisted or acquired names (Direct Line, DS Smith), or local lines Yahoo's
+  search never surfaces. Per the hard rules these are logged and skipped, not
   fabricated or hard-coded.
 - Wikipedia's STOXX Europe 600 table currently lists ~460 constituents (not the
   full 600); the app uses whatever the live page provides.

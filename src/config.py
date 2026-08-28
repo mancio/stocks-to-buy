@@ -33,7 +33,10 @@ CACHE_DIR = ROOT / ".cache"
 FINNHUB_CACHE_DIR = CACHE_DIR / "finnhub"
 YAHOO_CACHE_DIR = CACHE_DIR / "yahoo"
 APEWISDOM_CACHE_DIR = CACHE_DIR / "apewisdom"
+FUNDAMENTALS_CACHE_DIR = CACHE_DIR / "fundamentals"
+SYMBOLS_CACHE_DIR = CACHE_DIR / "symbols"
 CACHE_TTL_SECONDS = 24 * 60 * 60  # 24 hours
+SYMBOL_CACHE_TTL_SECONDS = 30 * 24 * 60 * 60  # symbol names change rarely
 
 # Support algorithm constants.
 LOOKBACK_DAYS = 252  # ~1 trading year

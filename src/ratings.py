@@ -38,11 +38,16 @@ _BUCKET_LABEL = {
     "strongSell": "Strong Sell",
 }
 
+# Public aliases for the report layer.
+BUCKET_ORDER = tuple(_BUCKET_ORDER)
+BUCKET_LABEL = dict(_BUCKET_LABEL)
+
 
 @dataclass
 class Rating:
     label: str  # "Strong Buy" | "Buy" | "Hold" | "Sell" | "Strong Sell"
     num_analysts: int
+    counts: dict[str, int]  # per-bucket analyst counts, as reported by the source
 
 
 def _pick_from_buckets(counts: dict[str, int]) -> Rating | None:
@@ -50,7 +55,7 @@ def _pick_from_buckets(counts: dict[str, int]) -> Rating | None:
     if total == 0:
         return None
     best = max(_BUCKET_ORDER, key=lambda b: (counts[b], -_BUCKET_ORDER.index(b)))
-    return Rating(label=_BUCKET_LABEL[best], num_analysts=total)
+    return Rating(label=_BUCKET_LABEL[best], num_analysts=total, counts=dict(counts))
 
 
 def _cache_path(base_dir: Path, symbol: str) -> Path:

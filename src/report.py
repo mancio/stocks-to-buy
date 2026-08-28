@@ -7,6 +7,8 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from . import config
+from .fundamentals import LINE_ITEM_LABELS
+from .ratings import BUCKET_LABEL, BUCKET_ORDER
 
 _RATING_CLASS = {
     "Strong Buy": "r-strongbuy",
@@ -20,11 +22,43 @@ TEMPLATE_DIR = config.ROOT / "templates"
 OUTPUT_PATH = config.ROOT / "report.html"
 
 
+def _detail_payload(row: dict) -> dict:
+    """Per-ticker data for the detail panel. Only keys the source actually gave."""
+    counts = row.get("rating_counts") or {}
+    buckets = [
+        {"key": b, "label": BUCKET_LABEL[b], "count": int(counts.get(b, 0) or 0)}
+        for b in BUCKET_ORDER
+        if b in counts
+    ]
+    fundamentals = row.get("fundamentals")
+    return {
+        "ticker": row["ticker"],
+        "name": row["name"],
+        "market": row["market"],
+        "score": row.get("score"),
+        "last_close": row["last_close"],
+        "support": row["support"],
+        "distance_pct": row["distance_pct"],
+        "high_52w": row["high_52w"],
+        "drawdown_pct": row["drawdown_pct"],
+        "days_since_high": row["days_since_high"],
+        "rating": row["rating"],
+        "rating_class": row["rating_class"],
+        "num_analysts": row["num_analysts"],
+        "community": row.get("community"),
+        "reasons": row.get("reasons", ""),
+        "buckets": buckets,
+        "fundamentals": fundamentals,
+    }
+
+
 def render_report(rows: list[dict], out_path: Path = OUTPUT_PATH) -> Path:
     """Render `rows` to a self-contained report.html and return its path.
 
     Each row dict must contain: ticker, name, market, last_close, support,
     distance_pct, high_52w, drawdown_pct, days_since_high, rating, num_analysts.
+    Optional: rating_counts (analyst buckets) and fundamentals (balance sheet);
+    when absent the detail panel says so rather than showing placeholder values.
     """
     env = Environment(
         loader=FileSystemLoader(str(TEMPLATE_DIR)),
@@ -43,6 +77,8 @@ def render_report(rows: list[dict], out_path: Path = OUTPUT_PATH) -> Path:
 
     html = template.render(
         rows=enriched,
+        details={r["ticker"]: _detail_payload(r) for r in enriched},
+        line_items=LINE_ITEM_LABELS,
         row_count=len(enriched),
         us_count=us_count,
         eu_count=eu_count,
