@@ -16,7 +16,8 @@ from src import config
 # Column indexes in the rendered table.
 C_SCORE, C_TICKER, C_NAME, C_MARKET = 0, 1, 2, 3
 C_LAST, C_SUPPORT, C_DIST, C_HIGH = 4, 5, 6, 7
-C_DRAWDOWN, C_DAYS, C_RATING, C_ANALYSTS, C_COMMUNITY = 8, 9, 10, 11, 12
+C_DRAWDOWN, C_DAYS, C_RATING, C_ANALYSTS = 8, 9, 10, 11
+C_COMMUNITY, C_DEMAND = 12, 13
 
 
 def test_distance_percent_matches_last_and_support(details):
@@ -82,6 +83,7 @@ def test_score_is_reproducible_from_its_components(details):
             + _analyst_score(d["rating"], d["num_analysts"]) * WEIGHTS["analyst"]
             + _drawdown_score(d["drawdown_pct"]) * WEIGHTS["drawdown"]
             + d["community"] / 100.0 * WEIGHTS["community"]
+            + d["demand"] / 100.0 * WEIGHTS["demand"]
         )
         implied_momentum = (d["score"] / 100.0 - known) / WEIGHTS["momentum"]
         assert -0.01 <= implied_momentum <= 1.01, f"{ticker}: {implied_momentum}"
@@ -91,6 +93,7 @@ def test_score_and_community_are_in_range(details):
     for ticker, d in details.items():
         assert 0.0 <= d["score"] <= 100.0, ticker
         assert 0.0 <= d["community"] <= 100.0, ticker
+        assert 0.0 <= d["demand"] <= 100.0, ticker
 
 
 def test_rows_are_ranked_by_score_then_price(table_rows, details):
@@ -117,6 +120,7 @@ def test_rendered_cells_match_the_detail_payload(table_rows, details):
         assert cells[C_RATING] == d["rating"]
         assert cells[C_ANALYSTS] == str(d["num_analysts"])
         assert cells[C_COMMUNITY] == f"{d['community']:.1f}"
+        assert cells[C_DEMAND] == f"{d['demand']:.1f}"
 
 
 def test_market_split_matches_the_header_counts(report_html, details):

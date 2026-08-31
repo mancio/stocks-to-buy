@@ -46,6 +46,7 @@ def _detail_payload(row: dict) -> dict:
         "rating_class": row["rating_class"],
         "num_analysts": row["num_analysts"],
         "community": row.get("community"),
+        "demand": row.get("demand"),
         "reasons": row.get("reasons", ""),
         "buckets": buckets,
         "fundamentals": fundamentals,

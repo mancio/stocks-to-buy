@@ -24,6 +24,13 @@ try:
 except ValueError:
     NEAR_THRESHOLD_PCT = 5.0
 
+# Buy-side demand (order-book) provider. "none" disables the signal entirely.
+DEMAND_PROVIDER: str = os.getenv("DEMAND_PROVIDER", "databento").strip().lower()
+DATABENTO_API_KEY: str = os.getenv("DATABENTO_API_KEY", "").strip()
+DATABENTO_DATASET: str = os.getenv("DATABENTO_DATASET", "XNAS.ITCH").strip()
+# bbo-1m is ~390 records/symbol/session; mbp-10 is orders of magnitude larger.
+DATABENTO_SCHEMA: str = os.getenv("DATABENTO_SCHEMA", "bbo-1m").strip()
+
 # Network defaults (all calls must respect these).
 HTTP_TIMEOUT = 15  # seconds
 HTTP_RETRIES = 1  # one retry with exponential backoff
@@ -35,6 +42,7 @@ YAHOO_CACHE_DIR = CACHE_DIR / "yahoo"
 APEWISDOM_CACHE_DIR = CACHE_DIR / "apewisdom"
 FUNDAMENTALS_CACHE_DIR = CACHE_DIR / "fundamentals"
 SYMBOLS_CACHE_DIR = CACHE_DIR / "symbols"
+DEMAND_CACHE_DIR = CACHE_DIR / "demand"
 CACHE_TTL_SECONDS = 24 * 60 * 60  # 24 hours
 SYMBOL_CACHE_TTL_SECONDS = 30 * 24 * 60 * 60  # symbol names change rarely
 
@@ -59,3 +67,5 @@ if __name__ == "__main__":
     print(f"ROOT              = {ROOT}")
     print(f"FINNHUB_API_KEY   = {'<set>' if FINNHUB_API_KEY else '<MISSING>'}")
     print(f"NEAR_THRESHOLD_PCT= {NEAR_THRESHOLD_PCT}")
+    print(f"DEMAND_PROVIDER   = {DEMAND_PROVIDER}")
+    print(f"DATABENTO_API_KEY = {'<set>' if DATABENTO_API_KEY else '<MISSING>'}")

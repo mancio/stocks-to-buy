@@ -111,6 +111,7 @@
         <th data-type="text">Rating</th>
         <th data-type="num"># Analysts</th>
         <th data-type="num">Community</th>
+        <th data-type="num">Demand</th>
         <th data-type="text">Reasons</th>
       </tr>
     </thead>
@@ -130,6 +131,7 @@
         <td><span class="rating {{ r.rating_class }}">{{ r.rating }}</span></td>
         <td class="num">{{ r.num_analysts }}</td>
         <td class="num">{{ "%.1f"|format(r.community) }}</td>
+        <td class="num">{{ "%.1f"|format(r.demand) }}</td>
         <td class="reasons">{{ r.reasons }}</td>
       </tr>
     {% endfor %}
@@ -244,7 +246,8 @@
       ["52w high", num(d.high_52w, 2)],
       ["Drawdown", "-" + num(d.drawdown_pct, 2) + "%"],
       ["Days since high", String(d.days_since_high)],
-      ["Community", num(d.community, 1)]
+      ["Community", num(d.community, 1)],
+      ["Demand (bid-side %)", num(d.demand, 1)]
     ].forEach(function (p) {
       var box = el("div");
       box.appendChild(el("span", "k", p[0]));

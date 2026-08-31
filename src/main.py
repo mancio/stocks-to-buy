@@ -21,6 +21,7 @@ from tqdm import tqdm
 
 from . import config
 from .community import community_signal, get_community_map
+from .demand import demand_signal
 from .fundamentals import fetch_fundamentals
 from .prices import download_history
 from .ratings import fetch_rating
@@ -141,15 +142,28 @@ def run() -> None:
     community = get_community_map()
     print(f"      {len(community)} tickers in community feed")
 
-    print("[8/10] Scoring & ranking (support + analyst + drawdown + momentum + community)...")
-    for r in rows:
+    print("[8/10] Scoring & ranking (support + analyst + drawdown + momentum "
+          "+ community + demand)...")
+    with_demand = 0
+    for r in tqdm(rows):
         csub, creason = community_signal(r["ticker"], community)
+        dsub, dreason = demand_signal(r["ticker"])
+        if dsub is not None:
+            with_demand += 1
         result = compute_score(
-            r, history.get(r["ticker"]), config.NEAR_THRESHOLD_PCT, csub, creason
+            r,
+            history.get(r["ticker"]),
+            config.NEAR_THRESHOLD_PCT,
+            csub,
+            creason,
+            dsub,
+            dreason,
         )
         r["score"] = result.score
         r["community"] = round(result.subscores["community"] * 100, 1)
+        r["demand"] = round(result.subscores["demand"] * 100, 1)
         r["reasons"] = result.reasons
+    print(f"      {with_demand}/{len(rows)} rows have order-book demand data")
     # Rank by composite score (desc); tie-break cheapest first.
     rows.sort(key=lambda r: (-r["score"], r["last_close"]))
 

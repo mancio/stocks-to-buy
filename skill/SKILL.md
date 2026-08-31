@@ -37,6 +37,7 @@ No mock data. If a required secret is missing, **stop and ask the user** to prov
 | Analyst consensus rating | Finnhub `/stock/recommendation` endpoint | **API key required** → ask user for `FINNHUB_API_KEY` | returns monthly buckets `strongBuy/buy/hold/sell/strongSell`; use most recent row |
 | Balance sheet | `yfinance.Ticker(sym).balance_sheet` / `.quarterly_balance_sheet` | none | detail-panel assets & liabilities |
 | Community attention | ApeWisdom `https://apewisdom.io/api/v1.0/filter/all-stocks` | none | US-only Reddit mention counts |
+| Buy-side demand (order book) | **User picks one of three** — see "Buy-side demand" below | key required unless `none` | US-only; optional, the app must run without it |
 
 If Finnhub rate-limits (60 req/min on free tier), throttle with `time.sleep(1.1)`
 between calls and cache responses to `.cache/finnhub/{symbol}.json` for 24 h.
@@ -67,6 +68,59 @@ Compute per ticker on the last 252 trading days (1 year):
 5. A stock is "near support" if `0 <= distance% <= NEAR_THRESHOLD_PCT` (default `5.0`, configurable via `.env`).
 
 If no qualifying support exists below last close, drop the ticker.
+
+## Buy-side demand (order-book interest) — ask the user which provider
+
+Every other signal is built from *executed* trades or from opinions. This one
+measures what is actually resting on the book waiting to buy — the closest a
+retail-accessible feed gets to "how many shares / how much money want to buy
+this stock right now".
+
+**Before writing any code, ask the user which provider to use.** Present these
+four choices verbatim and write the answer to `.env` as `DEMAND_PROVIDER`:
+
+| Choice | What you get | Cost | Catch |
+|---|---|---|---|
+| `databento` *(default)* | True L2 depth (`mbp-10`, 10 levels of bid/ask size) or cheap per-minute BBO (`bbo-1m`); historical and live | **$125 free signup credits**, then $199/mo | Credits expire 6 months, one set per team. `mbp-10` burns them fast — default to `bbo-1m` |
+| `alpaca` | Real-time websocket quotes with `bs` / `as` (bid & ask size), plus an `imbalances` channel | **$0/mo, permanent** | IEX feed only (~2% of US volume), 30 symbols max per websocket, top-of-book only |
+| `tiingo` | IEX endpoint with top-of-book bid/ask size | **$0/mo** | 500 unique symbols/month, 50 requests/hour, IEX-only |
+| `none` | Signal disabled, weight redistributed | — | — |
+
+Whichever is chosen, the contract is identical so the rest of the pipeline does
+not change:
+
+```python
+# src/demand.py
+def demand_signal(symbol: str) -> tuple[float | None, str | None]:
+    """(subscore 0..1, human reason) or (None, None) when there is no data."""
+```
+
+The sub-score is the **bid share of resting size**, which is already normalised:
+
+$$\text{imbalance} = \frac{\text{bid size}}{\text{bid size} + \text{ask size}}$$
+
+0.5 = balanced book, > 0.5 = more size queued to buy than to sell. Averaged over
+the sampled session. Sum every level the schema exposes (one for BBO, ten for
+`mbp-10`). The reason string must also carry the average resting **bid
+notional** (`avg bid size x mid price`) — that is the "value people want to buy"
+figure, and it is the whole point of the signal.
+
+### Hard rules for this signal
+
+- **Optional by construction.** No key, no SDK, or `DEMAND_PROVIDER=none` →
+  `(None, None)` → a neutral 0.5 sub-score. The pipeline must never fail
+  because demand data is unavailable.
+- **US-only.** Any ticker carrying an exchange suffix (`.DE`, `.PA`, …) is not
+  in a US equities dataset; return `(None, None)` rather than guessing. There is
+  no free EU depth source — do not invent one.
+- Discard one-sided books (auctions, halts) and zero/negative mid prices.
+- Reject a session with fewer than ~20 usable snapshots instead of scoring it.
+- Cache per symbol to `.cache/demand/{symbol}.json` for 24 h; cache the empty
+  result too, so a symbol with no coverage is not re-fetched all day.
+- **Never log the request URL or the key.** Report failures by exception type
+  only. Databento takes the key through the SDK constructor, not a query param.
+- Never fabricate a book. A symbol with no data gets the neutral score and *no*
+  reason string — the same treatment ApeWisdom gets for EU tickers.
 
 ## Analyst rating mapping
 
@@ -102,10 +156,11 @@ the human label and the total count `strongBuy+buy+hold+sell+strongSell`.
 ## Build steps (execute in order)
 
 1. **Ask the user for the Finnhub API key** before writing any code. Do not proceed without it. Tell them to register at `https://finnhub.io/register` (free) and paste the key. Save to `.env`.
-2. Create `requirements.txt` and install: `python -m venv .venv && .venv\Scripts\pip install -r requirements.txt` (Windows / PowerShell).
-3. Implement modules in the order: `config → symbols → universe → prices → support → ratings → fundamentals → community → signals → report → main`.
-4. Each module gets a `__main__` block with a tiny smoke test (e.g. `python -m src.universe` prints the first 10 rows).
-5. `main.py` flow:
+2. **Ask the user which buy-side demand provider to use** (`databento` / `alpaca` / `tiingo` / `none`) using the table in "Buy-side demand" above. Save the answer as `DEMAND_PROVIDER` and, unless they chose `none`, ask for that provider's key too. This one is optional — if they decline, record `none` and carry on.
+3. Create `requirements.txt` and install: `python -m venv .venv && .venv\Scripts\pip install -r requirements.txt` (Windows / PowerShell).
+4. Implement modules in the order: `config → symbols → universe → prices → support → ratings → fundamentals → community → demand → signals → report → main`.
+5. Each module gets a `__main__` block with a tiny smoke test (e.g. `python -m src.universe` prints the first 10 rows).
+6. `main.py` flow:
    - load universe (US + EU concatenated)
    - batch-download prices via `yfinance.download(tickers, period="1y", group_by="ticker", auto_adjust=False, threads=True)`
    - **re-resolve every ticker that returned no history** and download the recovered symbols
@@ -113,11 +168,11 @@ the human label and the total count `strongBuy+buy+hold+sell+strongSell`.
    - compute 52w high, drawdown %, and days-since-high from the same history (no extra fetch)
    - fetch ratings for the survivors only (minimises API calls)
    - **drop every row whose rating is not `Buy` or `Strong Buy`**
-   - fetch the community signal, then score and rank the survivors
+   - fetch the community signal and the buy-side demand signal, then score and rank the survivors
    - fetch balance-sheet fundamentals for the survivors only
    - render the single `report.html`
-6. Print final summary: `"Wrote report.html with N rows (X US, Y EU)"`.
-7. Run `python -m pytest tests -q` — the suite must be green before the build is done.
+7. Print final summary: `"Wrote report.html with N rows (X US, Y EU)"`.
+8. Run `python -m pytest tests -q` — the suite must be green before the build is done.
 
 ## HTML template requirements
 
@@ -224,6 +279,7 @@ Wikipedia's spelling (104 misses -> ~50 recovered on a recent run).
 | `test_ratings.py` | winning bucket, tie-break order, total = sum of buckets, counts preserved, empty -> unrated |
 | `test_fundamentals.py` | NaN/inf rejection, omitted (not zero-filled) cells, period cap, dropping self-contradicting totals, plus accounting identities across every **real cached** balance sheet |
 | `test_symbols.py` | mechanical variants, share-class spellings, accent folding, name similarity, match acceptance/rejection rules, shortest-symbol tie-break, the verified glued-class fallback — all against recorded Yahoo payloads, no network |
+| `test_demand.py` | order-book folding: bid share of resting size, depth summed across every level, mid-price notional, one-sided/zero-price books discarded, thin sessions rejected, EU tickers unscored — against synthetic records, no network, no key |
 | `test_universe.py` | Wikipedia -> Yahoo ticker construction, unmapped-country drops, and the pipeline's missing-ticker recovery (base retry, name search, no-collision renames, unresolvable rows left alone) |
 | `test_report_numbers.py` | re-derives every figure in the generated `report.html`: distance % and drawdown % from their inputs, support below last close and within threshold, analyst total = sum of buckets, consensus = winning bucket, Buy/Strong Buy filter, score reproducible from its components (implied momentum must land in 0..1), ranking order, and every rendered cell matching the embedded detail payload |
 
@@ -236,7 +292,7 @@ absent, so a clean checkout still passes.
 - **Never** hard-code a Wikipedia-ticker → Yahoo-symbol mapping. Resolve it from a live source, require the match to be verifiable (right exchange, matching name), and confirm it by actually downloading price history.
 - **Never** commit `.env` or the `.cache/` folder — add both to `.gitignore`.
 - If Wikipedia layout changes and parsing fails, raise a clear error pointing at the offending URL; do not fall back to a hard-coded list.
-- Keep dependencies to the ones in `requirements.txt`; do not add paid SDKs.
+- Keep dependencies to the ones in `requirements.txt`; do not add paid SDKs — the one exception is the demand provider's SDK the user explicitly chose, which must stay optional at import time.
 - All network calls must have a 15 s timeout and one retry with exponential backoff.
 
 ## Done =
@@ -320,7 +376,7 @@ transparent 0–100 **composite score** — a weighted blend of independent,
 normalised (0..1) signals. Weights are explicit constants summing to 1.0:
 
 ```
-support 0.27 · analyst 0.315 · drawdown 0.18 · momentum 0.135 · community 0.10
+support 0.25 · analyst 0.29 · drawdown 0.16 · momentum 0.12 · community 0.08 · demand 0.10
 ```
 
 - **support**   — proximity to the support level (closer = higher).
@@ -328,6 +384,7 @@ support 0.27 · analyst 0.315 · drawdown 0.18 · momentum 0.135 · community 0.
 - **drawdown**  — pullback sweet-spot (peaks ~20% off the 52w high).
 - **momentum**  — last close vs its 50-day SMA (recovering = higher).
 - **community** — ApeWisdom attention (see below); US-only, neutral otherwise.
+- **demand**    — resting order-book bid share (see below); US-only, neutral otherwise.
 
 `compute_score()` returns the score, the per-signal breakdown, and a
 human-readable **reasons** string. Rows are sorted by score desc, tie-break
@@ -352,11 +409,11 @@ whole feed is fetched once and cached to `.cache/apewisdom/map.json` for 6 h.
 
 ```
 Score | Ticker | Name | Market | Last | Support | Dist % | 52w High |
-Drawdown | Days since high | Rating | # Analysts | Community | Reasons
+Drawdown | Days since high | Rating | # Analysts | Community | Demand | Reasons
 ```
 
-`Score` (first) and `Community` (numeric, 0–100) and `Reasons` (last) are
-additions; the middle columns match the base skill's exact order.
+`Score` (first), `Community` and `Demand` (numeric, 0–100) and `Reasons` (last)
+are additions; the middle columns match the base skill's exact order.
 
 ## Updated project layout (additions)
 
@@ -364,6 +421,7 @@ additions; the middle columns match the base skill's exact order.
 src/
 ├── signals.py       # composite score + per-signal breakdown + reasons
 ├── community.py     # ApeWisdom attention signal (US only), cached 6 h
+├── demand.py        # Databento order-book demand (US only), cached 24 h
 ├── fundamentals.py  # Yahoo balance sheet for the detail panel, cached 24 h
 ├── symbols.py       # Wikipedia ticker -> Yahoo symbol resolution, cached 30 d
 └── ...              # config, universe, prices, support, ratings, report, main
@@ -372,8 +430,31 @@ src/
 ├── yahoo/           # EU (+ US fallback) ratings, 24 h
 ├── fundamentals/    # balance sheets, 24 h
 ├── symbols/         # Yahoo symbol search results, 30 d
+├── demand/          # order-book summaries, 24 h
 └── apewisdom/       # community map, 6 h
 ```
+
+## Buy-side demand signal (`src/demand.py`, Databento)
+
+The provider chosen for this build is **Databento** (`DEMAND_PROVIDER=databento`).
+It is the only one of the three free/trial options that can serve real
+multi-level depth rather than IEX top-of-book.
+
+- Key from `DATABENTO_API_KEY`; sign up at `https://databento.com/signup` for
+  $125 of historical credits (expire after 6 months, one set per team).
+- Dataset `DATABENTO_DATASET` (default `XNAS.ITCH`), schema `DATABENTO_SCHEMA`
+  (default `bbo-1m`). `bbo-1m` is ~390 records per symbol per session, cheap
+  enough for a daily run; `mbp-10` gives ten levels of depth but costs orders of
+  magnitude more — switch only with a known credit budget.
+- Samples the most recent available session (Databento embargoes the last day on
+  the historical API), folds every snapshot into one summary, and caches it to
+  `.cache/demand/{symbol}.json` for 24 h. Empty results are cached too.
+- Sub-score = bid share of resting size, already 0..1. Reason string reads e.g.
+  `Book: 58% bid-side ▲ (1.2k sh / 264k resting to buy)` — quantity *and* value.
+- US-only and fully optional: no key, no SDK, or a suffixed EU ticker yields a
+  neutral 0.5 and no reason. `python -m src.main` runs unchanged without it.
+- The key never reaches a URL, a cache file, or a log line; failures are logged
+  as the exception type only.
 
 ## Known data-quality notes
 

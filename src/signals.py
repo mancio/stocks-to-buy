@@ -9,6 +9,8 @@ Signals (each normalised to 0..1, higher = more attractive):
   * analyst   — consensus rating strength, scaled by analyst-count confidence
   * drawdown  — pullback sweet spot (rewards a moderate dip, penalises crashes)
   * momentum  — last close vs its 50-day moving average (recovering = better)
+  * community — Reddit attention (US only, neutral elsewhere)
+  * demand    — share of resting order-book size sitting on the bid (US only)
 
 Weights are explicit constants below and sum to 1.0. Change them in one place.
 """
@@ -20,11 +22,12 @@ import pandas as pd
 
 # Explicit, auditable weights (must sum to 1.0).
 WEIGHTS: dict[str, float] = {
-    "support": 0.27,
-    "analyst": 0.315,
-    "drawdown": 0.18,
-    "momentum": 0.135,
-    "community": 0.10,
+    "support": 0.25,
+    "analyst": 0.29,
+    "drawdown": 0.16,
+    "momentum": 0.12,
+    "community": 0.08,
+    "demand": 0.10,
 }
 
 _RATING_BASE = {
@@ -93,12 +96,15 @@ def compute_score(
     threshold_pct: float,
     community_sub: float | None = None,
     community_reason: str | None = None,
+    demand_sub: float | None = None,
+    demand_reason: str | None = None,
 ) -> ScoreResult:
     """Return the composite score, per-signal breakdown, and a reasons string.
 
     `candidate` must contain: distance_pct, drawdown_pct, rating, num_analysts.
     `history` is the same OHLC frame used for support (for the momentum signal).
     `community_sub` is the ApeWisdom attention sub-score (None -> neutral 0.5).
+    `demand_sub` is the order-book bid-side share (None -> neutral 0.5).
     """
     ratio = _momentum_ratio(history)
 
@@ -108,6 +114,7 @@ def compute_score(
         "drawdown": _drawdown_score(candidate["drawdown_pct"]),
         "momentum": _momentum_score(ratio),
         "community": community_sub if community_sub is not None else 0.5,
+        "demand": demand_sub if demand_sub is not None else 0.5,
     }
 
     score = sum(subs[k] * WEIGHTS[k] for k in WEIGHTS) * 100.0
@@ -121,6 +128,8 @@ def compute_score(
     ]
     if community_reason:
         reason_parts.append(community_reason)
+    if demand_reason:
+        reason_parts.append(demand_reason)
     reasons = "; ".join(reason_parts)
 
     return ScoreResult(score=round(score, 1), subscores=subs, reasons=reasons)

@@ -87,12 +87,30 @@ def test_composite_score_equals_the_weighted_sum():
             "drawdown": 1.0,
             "momentum": 0.5,   # empty history -> neutral
             "community": 0.5,
+            "demand": 0.5,     # no order-book data -> neutral
         }
     )
-    expected = (
-        1.0 * 0.27 + 1.0 * 0.315 + 1.0 * 0.18 + 0.5 * 0.135 + 0.5 * 0.10
+    expected = sum(
+        result.subscores[k] * WEIGHTS[k] for k in WEIGHTS
     ) * 100.0
     assert result.score == pytest.approx(expected, abs=0.05)
+
+
+def test_demand_subscore_defaults_to_neutral_and_is_passed_through():
+    candidate = {
+        "distance_pct": 0.0,
+        "drawdown_pct": 20.0,
+        "rating": "Buy",
+        "num_analysts": 20,
+    }
+    neutral = compute_score(candidate, pd.DataFrame(), 5.0)
+    heavy_bid = compute_score(candidate, pd.DataFrame(), 5.0, demand_sub=0.9)
+
+    assert neutral.subscores["demand"] == pytest.approx(0.5)
+    assert heavy_bid.subscores["demand"] == pytest.approx(0.9)
+    assert heavy_bid.score - neutral.score == pytest.approx(
+        0.4 * WEIGHTS["demand"] * 100.0, abs=0.05
+    )
 
 
 def test_score_stays_within_zero_and_one_hundred():
@@ -101,12 +119,14 @@ def test_score_stays_within_zero_and_one_hundred():
         pd.DataFrame(),
         5.0,
         community_sub=0.0,
+        demand_sub=0.0,
     )
     best = compute_score(
         {"distance_pct": 0.0, "drawdown_pct": 20.0, "rating": "Strong Buy", "num_analysts": 50},
         pd.DataFrame({"Close": [100.0] * 49 + [200.0]}),
         5.0,
         community_sub=1.0,
+        demand_sub=1.0,
     )
     assert 0.0 <= worst.score <= best.score <= 100.0
 
@@ -117,8 +137,10 @@ def test_reasons_string_reports_the_candidate_numbers():
         pd.DataFrame(),
         5.0,
         community_reason="Reddit: 10 mentions",
+        demand_reason="Book: 61% bid-side",
     )
     assert "Buy (12 analysts)" in result.reasons
     assert "2.3% above support" in result.reasons
     assert "28% off 52w high" in result.reasons
     assert "Reddit: 10 mentions" in result.reasons
+    assert "Book: 61% bid-side" in result.reasons
