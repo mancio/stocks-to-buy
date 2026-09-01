@@ -47,6 +47,7 @@ def _detail_payload(row: dict) -> dict:
         "num_analysts": row["num_analysts"],
         "community": row.get("community"),
         "demand": row.get("demand"),
+        "short_pct": row.get("short_pct"),
         "reasons": row.get("reasons", ""),
         "buckets": buckets,
         "fundamentals": fundamentals,

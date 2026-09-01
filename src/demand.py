@@ -1,36 +1,42 @@
-"""Buy-side demand signal from real order-book data (Databento).
+"""Buy-side demand signal.
 
 Every other signal in this project is derived from *executed* trades or from
-opinions (analysts, Reddit). This one measures what is actually resting on the
-book waiting to buy: the bid side of the quote, in shares and in currency.
+opinions (analysts, Reddit). This one tries to measure demand itself. Two
+providers are supported, selected with `DEMAND_PROVIDER`:
 
-Metric
-------
-For each quote snapshot in the sampled session::
+``derived`` (default, free)
+    Chaikin Money Flow over the daily bars already downloaded for the support
+    algorithm. No API, no key, no account, and it covers **EU tickers too** --
+    the only demand provider here that does. It is an *inference* from where
+    each close landed inside its bar, not a measurement of resting orders::
 
-    imbalance = bid_size / (bid_size + ask_size)
+        MFM = ((C - L) - (H - C)) / (H - L)
+        CMF = sum(MFM * V) / sum(V)      over the last 20 bars
 
-Averaged over the session this gives a 0..1 number: 0.5 = balanced book,
-> 0.5 = more size queued to buy than to sell. That average *is* the sub-score,
-so the signal needs no arbitrary rescaling.
+    A close near the high means buyers absorbed the session, so that bar's
+    volume counts as accumulation. CMF lands in [-1, 1]; the sub-score is
+    `(CMF + 1) / 2`.
 
-The reason string also carries the average resting bid notional
-(`avg bid size x mid price`), which is the closest thing a retail-accessible
-feed gives to "how much money wants to buy this stock right now".
+``databento`` (paid, real order book)
+    What is actually resting on the book waiting to buy::
 
-Cost
-----
+        imbalance = bid_size / (bid_size + ask_size)
+
+    Averaged over the sampled session. 0.5 = balanced book, > 0.5 = more size
+    queued to buy than to sell. Stronger evidence than CMF, but US-only and it
+    needs credits.
+
+Both return the same `(subscore 0..1, reason)` pair, so the rest of the
+pipeline does not care which one is active. The reason string always carries a
+share *quantity* and a *currency value*, which is the point of the signal.
+
+Cost (databento only)
+---------------------
 `bbo-1m` is one consolidated best-bid/offer snapshot per minute, ~390 records
-per symbol per session — cheap enough to run daily against Databento's $125 of
+per symbol per session -- cheap enough to run daily against Databento's $125 of
 free signup credits. `mbp-10` (ten levels of depth) is far more informative and
 far more expensive; select it via `DATABENTO_SCHEMA` only if you know your
 credit budget covers it.
-
-Coverage
---------
-US listings only. EU tickers carry an exchange suffix and are not in the
-US equities datasets, so they get a neutral score and no reason — the same
-asymmetry the ApeWisdom community signal already has.
 
 Security
 --------
@@ -45,6 +51,8 @@ import time
 from dataclasses import dataclass, asdict
 from datetime import date, timedelta
 
+import pandas as pd
+
 from . import config
 
 _CACHE_TTL_SECONDS = 24 * 60 * 60
@@ -53,6 +61,13 @@ _LOOKBACK_DAYS = 5
 # Databento embargoes the most recent data on the historical API.
 _EMBARGO_DAYS = 1
 _MIN_SNAPSHOTS = 20  # below this the session is too thin to score
+
+# Chaikin Money Flow window, in trading days.
+CMF_WINDOW = 20
+
+
+def _clamp(x: float, lo: float = 0.0, hi: float = 1.0) -> float:
+    return max(lo, min(hi, x))
 
 
 @dataclass
@@ -173,6 +188,8 @@ def fetch_demand(symbol: str) -> Demand | None:
 
 
 def _fmt_shares(n: float) -> str:
+    if n >= 1_000_000_000:
+        return f"{n / 1_000_000_000:.1f}B"
     if n >= 1_000_000:
         return f"{n / 1_000_000:.1f}M"
     if n >= 1_000:
@@ -181,6 +198,8 @@ def _fmt_shares(n: float) -> str:
 
 
 def _fmt_money(n: float) -> str:
+    if n >= 1_000_000_000:
+        return f"{n / 1_000_000_000:.1f}B"
     if n >= 1_000_000:
         return f"{n / 1_000_000:.1f}M"
     if n >= 1_000:
@@ -188,8 +207,63 @@ def _fmt_money(n: float) -> str:
     return f"{n:.0f}"
 
 
-def demand_signal(symbol: str) -> tuple[float | None, str | None]:
-    """Return (subscore 0..1, reason) for a symbol, or (None, None) if no data."""
+def chaikin_money_flow(history: pd.DataFrame, window: int = CMF_WINDOW) -> float | None:
+    """Chaikin Money Flow over the last `window` bars, in [-1, 1].
+
+    Bars with no intraday range (H == L) carry no directional information and
+    are skipped rather than treated as neutral.
+    """
+    if history is None or history.empty:
+        return None
+    needed = {"High", "Low", "Close", "Volume"}
+    if not needed.issubset(history.columns):
+        return None
+
+    bars = history.tail(window)
+    high = bars["High"].astype(float)
+    low = bars["Low"].astype(float)
+    close = bars["Close"].astype(float)
+    volume = bars["Volume"].astype(float)
+
+    span = high - low
+    usable = (span > 0) & (volume > 0)
+    if usable.sum() < window // 2:  # too few real bars to trust the reading
+        return None
+
+    mfm = ((close - low) - (high - close))[usable] / span[usable]
+    vol = volume[usable]
+    total = float(vol.sum())
+    if total <= 0:
+        return None
+    return float((mfm * vol).sum() / total)
+
+
+def _derived_signal(history: pd.DataFrame) -> tuple[float | None, str | None]:
+    """Money-flow demand estimate from the daily bars already downloaded."""
+    cmf = chaikin_money_flow(history)
+    if cmf is None:
+        return None, None
+
+    sub = _clamp((cmf + 1.0) / 2.0)
+    bars = history.tail(CMF_WINDOW)
+    avg_volume = float(bars["Volume"].astype(float).mean())
+    last_close = float(bars["Close"].astype(float).iloc[-1])
+    # CMF is the volume-weighted share of accumulation, so CMF x volume is the
+    # net number of shares the money flow attributes to buyers each day.
+    net_shares = cmf * avg_volume
+
+    arrow = "\u25B2" if cmf > 0.05 else ("\u25BC" if cmf < -0.05 else "\u25AC")
+    sign = "+" if net_shares >= 0 else "-"
+    reason = (
+        f"Flow: {sub * 100:.0f}% buy-side {arrow} "
+        f"({sign}{_fmt_shares(abs(net_shares))} sh / "
+        f"{sign}{_fmt_money(abs(net_shares) * last_close)} per day)"
+    )
+    return sub, reason
+
+
+def _order_book_signal(symbol: str) -> tuple[float | None, str | None]:
+    """Resting-order demand from Databento."""
     demand = fetch_demand(symbol)
     if demand is None:
         return None, None
@@ -205,6 +279,24 @@ def demand_signal(symbol: str) -> tuple[float | None, str | None]:
     return demand.imbalance, reason
 
 
+def demand_signal(
+    symbol: str, history: pd.DataFrame | None = None
+) -> tuple[float | None, str | None]:
+    """Return (subscore 0..1, reason) for a symbol, or (None, None) if no data.
+
+    Dispatches on `DEMAND_PROVIDER`. `history` is the same OHLCV frame already
+    used for the support algorithm; only the `derived` provider needs it.
+    """
+    if config.DEMAND_PROVIDER == "derived":
+        return _derived_signal(history)
+    if config.DEMAND_PROVIDER == "databento":
+        return _order_book_signal(symbol)
+    return None, None
+
+
 if __name__ == "__main__":
+    from .prices import download_history
+
+    hist = download_history(["AAPL", "MU", "SAP.DE"])
     for sym in ["AAPL", "MU", "SAP.DE"]:
-        print(sym, demand_signal(sym))
+        print(sym, demand_signal(sym, hist.get(sym)))

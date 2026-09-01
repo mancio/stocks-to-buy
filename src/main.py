@@ -26,6 +26,7 @@ from .fundamentals import fetch_fundamentals
 from .prices import download_history
 from .ratings import fetch_rating
 from .report import render_report
+from .short_volume import get_short_volume_map, short_volume_pct
 from .signals import compute_score
 from .support import compute_support, is_near_support
 from .symbols import base_symbol, resolve_symbol
@@ -142,12 +143,16 @@ def run() -> None:
     community = get_community_map()
     print(f"      {len(community)} tickers in community feed")
 
+    print("      Fetching FINRA daily short volume...")
+    shorts = get_short_volume_map()
+    print(f"      {len(shorts)} symbols in the FINRA file")
+
     print("[8/10] Scoring & ranking (support + analyst + drawdown + momentum "
           "+ community + demand)...")
     with_demand = 0
     for r in tqdm(rows):
         csub, creason = community_signal(r["ticker"], community)
-        dsub, dreason = demand_signal(r["ticker"])
+        dsub, dreason = demand_signal(r["ticker"], history.get(r["ticker"]))
         if dsub is not None:
             with_demand += 1
         result = compute_score(
@@ -162,8 +167,9 @@ def run() -> None:
         r["score"] = result.score
         r["community"] = round(result.subscores["community"] * 100, 1)
         r["demand"] = round(result.subscores["demand"] * 100, 1)
+        r["short_pct"] = short_volume_pct(r["ticker"], shorts)
         r["reasons"] = result.reasons
-    print(f"      {with_demand}/{len(rows)} rows have order-book demand data")
+    print(f"      {with_demand}/{len(rows)} rows have demand data")
     # Rank by composite score (desc); tie-break cheapest first.
     rows.sort(key=lambda r: (-r["score"], r["last_close"]))
 

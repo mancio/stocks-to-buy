@@ -17,7 +17,7 @@ from src import config
 C_SCORE, C_TICKER, C_NAME, C_MARKET = 0, 1, 2, 3
 C_LAST, C_SUPPORT, C_DIST, C_HIGH = 4, 5, 6, 7
 C_DRAWDOWN, C_DAYS, C_RATING, C_ANALYSTS = 8, 9, 10, 11
-C_COMMUNITY, C_DEMAND = 12, 13
+C_COMMUNITY, C_DEMAND, C_SHORT = 12, 13, 14
 
 
 def test_distance_percent_matches_last_and_support(details):
@@ -96,6 +96,18 @@ def test_score_and_community_are_in_range(details):
         assert 0.0 <= d["demand"] <= 100.0, ticker
 
 
+def test_short_volume_is_a_percentage_of_traded_volume(details):
+    """US-only and never fabricated: EU rows must carry no reading at all."""
+    for ticker, d in details.items():
+        if d["short_pct"] is None:
+            continue
+        assert d["market"] == "US", ticker
+        assert 0.0 <= d["short_pct"] <= 100.0, ticker
+    assert all(
+        d["short_pct"] is None for d in details.values() if d["market"] == "EU"
+    )
+
+
 def test_rows_are_ranked_by_score_then_price(table_rows, details):
     keys = [
         (-details[t]["score"], details[t]["last_close"]) for t, _ in table_rows
@@ -121,6 +133,10 @@ def test_rendered_cells_match_the_detail_payload(table_rows, details):
         assert cells[C_ANALYSTS] == str(d["num_analysts"])
         assert cells[C_COMMUNITY] == f"{d['community']:.1f}"
         assert cells[C_DEMAND] == f"{d['demand']:.1f}"
+        expected_short = (
+            "n/a" if d["short_pct"] is None else f"{d['short_pct']:.1f}"
+        )
+        assert cells[C_SHORT] == expected_short
 
 
 def test_market_split_matches_the_header_counts(report_html, details):

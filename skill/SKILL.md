@@ -37,7 +37,8 @@ No mock data. If a required secret is missing, **stop and ask the user** to prov
 | Analyst consensus rating | Finnhub `/stock/recommendation` endpoint | **API key required** → ask user for `FINNHUB_API_KEY` | returns monthly buckets `strongBuy/buy/hold/sell/strongSell`; use most recent row |
 | Balance sheet | `yfinance.Ticker(sym).balance_sheet` / `.quarterly_balance_sheet` | none | detail-panel assets & liabilities |
 | Community attention | ApeWisdom `https://apewisdom.io/api/v1.0/filter/all-stocks` | none | US-only Reddit mention counts |
-| Buy-side demand (order book) | **User picks one of three** — see "Buy-side demand" below | key required unless `none` | US-only; optional, the app must run without it |
+| Buy-side demand (order book) | **User picks one of five** — see "Buy-side demand" below | none for `derived` | `derived` is free and covers EU too; the rest are US-only |
+| Short-sale volume | FINRA `https://cdn.finra.org/equity/regsho/daily/CNMSshvol{YYYYMMDD}.txt` | none | free public file, no account; US consolidated tape only |
 
 If Finnhub rate-limits (60 req/min on free tier), throttle with `time.sleep(1.1)`
 between calls and cache responses to `.cache/finnhub/{symbol}.json` for 24 h.
@@ -77,25 +78,54 @@ retail-accessible feed gets to "how many shares / how much money want to buy
 this stock right now".
 
 **Before writing any code, ask the user which provider to use.** Present these
-four choices verbatim and write the answer to `.env` as `DEMAND_PROVIDER`:
+five choices verbatim and write the answer to `.env` as `DEMAND_PROVIDER`:
 
 | Choice | What you get | Cost | Catch |
 |---|---|---|---|
-| `databento` *(default)* | True L2 depth (`mbp-10`, 10 levels of bid/ask size) or cheap per-minute BBO (`bbo-1m`); historical and live | **$125 free signup credits**, then $199/mo | Credits expire 6 months, one set per team. `mbp-10` burns them fast — default to `bbo-1m` |
+| `derived` *(default)* | Chaikin Money Flow over the daily bars **already downloaded** for the support algorithm | **free, no key, no account** | An inference from where each close landed inside its bar, not a measurement of resting orders |
+| `databento` | True L2 depth (`mbp-10`, 10 levels of bid/ask size) or cheap per-minute BBO (`bbo-1m`); historical and live | **$125 free signup credits**, then $199/mo | Credits expire 6 months, one set per team. `mbp-10` burns them fast — default to `bbo-1m`. US-only |
 | `alpaca` | Real-time websocket quotes with `bs` / `as` (bid & ask size), plus an `imbalances` channel | **$0/mo, permanent** | IEX feed only (~2% of US volume), 30 symbols max per websocket, top-of-book only |
 | `tiingo` | IEX endpoint with top-of-book bid/ask size | **$0/mo** | 500 unique symbols/month, 50 requests/hour, IEX-only |
-| `none` | Signal disabled, weight redistributed | — | — |
+| `none` | Signal disabled, neutral 0.5 for every row | — | — |
+
+Prefer `derived` unless the user specifically wants real order-book depth. It
+is the only option that needs no account and the only one that covers **EU
+tickers**, so it removes the US-only coverage hole every other demand source
+has.
 
 Whichever is chosen, the contract is identical so the rest of the pipeline does
 not change:
 
 ```python
 # src/demand.py
-def demand_signal(symbol: str) -> tuple[float | None, str | None]:
+def demand_signal(
+    symbol: str, history: pd.DataFrame | None = None
+) -> tuple[float | None, str | None]:
     """(subscore 0..1, human reason) or (None, None) when there is no data."""
 ```
 
-The sub-score is the **bid share of resting size**, which is already normalised:
+### `derived` — Chaikin Money Flow (no API at all)
+
+For each of the last 20 daily bars, locate the close inside its range and
+weight that by the bar's volume:
+
+$$\text{MFM} = \frac{(C - L) - (H - C)}{H - L} \qquad \text{CMF} = \frac{\sum \text{MFM}_i \cdot V_i}{\sum V_i}$$
+
+A close near the high means buyers absorbed the session, so that bar's volume
+counts as accumulation. CMF lands in $[-1, 1]$; the sub-score is
+$(\text{CMF} + 1) / 2$. Bars with no intraday range ($H = L$) or zero volume
+carry no directional information and are **skipped**, not treated as neutral;
+if fewer than half the window is usable, return no reading rather than a
+misleading one.
+
+Be explicit in the docstring that this is an *estimate*. `CMF x average volume`
+gives the net shares attributed to buyers per day, which is what the reason
+string reports.
+
+### `databento` / `alpaca` / `tiingo` — order book
+
+The sub-score is the **bid share of resting size**, which is already
+normalised:
 
 $$\text{imbalance} = \frac{\text{bid size}}{\text{bid size} + \text{ask size}}$$
 
@@ -110,9 +140,12 @@ figure, and it is the whole point of the signal.
 - **Optional by construction.** No key, no SDK, or `DEMAND_PROVIDER=none` →
   `(None, None)` → a neutral 0.5 sub-score. The pipeline must never fail
   because demand data is unavailable.
-- **US-only.** Any ticker carrying an exchange suffix (`.DE`, `.PA`, …) is not
-  in a US equities dataset; return `(None, None)` rather than guessing. There is
-  no free EU depth source — do not invent one.
+- **The order-book providers are US-only.** Any ticker carrying an exchange
+  suffix (`.DE`, `.PA`, …) is not in a US equities dataset; return
+  `(None, None)` rather than guessing. There is no free EU depth source — do
+  not invent one, and do not scrape an exchange or broker web page for it
+  (breaks their terms of service and the underlying market-data licence, and
+  the markup changes without notice). `derived` is the EU answer.
 - Discard one-sided books (auctions, halts) and zero/negative mid prices.
 - Reject a session with fewer than ~20 usable snapshots instead of scoring it.
 - Cache per symbol to `.cache/demand/{symbol}.json` for 24 h; cache the empty
@@ -121,6 +154,37 @@ figure, and it is the whole point of the signal.
   only. Databento takes the key through the SDK constructor, not a query param.
 - Never fabricate a book. A symbol with no data gets the neutral score and *no*
   reason string — the same treatment ApeWisdom gets for EU tickers.
+
+## Short-sale volume (FINRA, free, no account)
+
+FINRA publishes the short-sold share of consolidated volume for every US
+trading day as a pipe-delimited text file on a public CDN:
+
+```
+https://cdn.finra.org/equity/regsho/daily/CNMSshvol{YYYYMMDD}.txt
+Date|Symbol|ShortVolume|ShortExemptVolume|TotalVolume|Market
+```
+
+`short_pct = ShortVolume / TotalVolume x 100`. Market-wide this sits near
+45-50%, because most short volume is market-maker hedging rather than
+directional bearish positioning.
+
+### Hard rules for this source
+
+- **Display it, do not score it.** A high reading is genuinely ambiguous — it
+  can mean bearish pressure or squeeze fuel. Render the column and let the
+  reader judge; do not fold it into the composite score and do not attach a
+  direction to it.
+- This is **short volume**, not **short interest** (open positions, published
+  fortnightly). Do not label it as the latter.
+- Walk back day by day to find the newest published file: weekends have none,
+  holidays 404, and there is a publication lag. Cap the walk (~7 days).
+- Drop rows that are impossible (`total <= 0`, `short > total`, `short < 0`,
+  non-numeric, missing symbol) and the `Total` footer row. Never repair them.
+- US consolidated tape only. EU tickers get `None`, and the report must render
+  that as `n/a` — never `0.0`.
+- Cache the whole map to `.cache/finra/short_volume.json` for 24 h; one
+  download serves every ticker.
 
 ## Analyst rating mapping
 
@@ -156,9 +220,9 @@ the human label and the total count `strongBuy+buy+hold+sell+strongSell`.
 ## Build steps (execute in order)
 
 1. **Ask the user for the Finnhub API key** before writing any code. Do not proceed without it. Tell them to register at `https://finnhub.io/register` (free) and paste the key. Save to `.env`.
-2. **Ask the user which buy-side demand provider to use** (`databento` / `alpaca` / `tiingo` / `none`) using the table in "Buy-side demand" above. Save the answer as `DEMAND_PROVIDER` and, unless they chose `none`, ask for that provider's key too. This one is optional — if they decline, record `none` and carry on.
+2. **Ask the user which buy-side demand provider to use** (`derived` / `databento` / `alpaca` / `tiingo` / `none`) using the table in "Buy-side demand" above. Save the answer as `DEMAND_PROVIDER` and, if they picked a keyed provider, ask for that key too. Default to `derived`, which needs nothing.
 3. Create `requirements.txt` and install: `python -m venv .venv && .venv\Scripts\pip install -r requirements.txt` (Windows / PowerShell).
-4. Implement modules in the order: `config → symbols → universe → prices → support → ratings → fundamentals → community → demand → signals → report → main`.
+4. Implement modules in the order: `config → symbols → universe → prices → support → ratings → fundamentals → community → demand → short_volume → signals → report → main`.
 5. Each module gets a `__main__` block with a tiny smoke test (e.g. `python -m src.universe` prints the first 10 rows).
 6. `main.py` flow:
    - load universe (US + EU concatenated)
@@ -169,6 +233,7 @@ the human label and the total count `strongBuy+buy+hold+sell+strongSell`.
    - fetch ratings for the survivors only (minimises API calls)
    - **drop every row whose rating is not `Buy` or `Strong Buy`**
    - fetch the community signal and the buy-side demand signal, then score and rank the survivors
+   - fetch the FINRA short-volume map once and attach `short_pct` to each row (display only)
    - fetch balance-sheet fundamentals for the survivors only
    - render the single `report.html`
 7. Print final summary: `"Wrote report.html with N rows (X US, Y EU)"`.
@@ -279,7 +344,8 @@ Wikipedia's spelling (104 misses -> ~50 recovered on a recent run).
 | `test_ratings.py` | winning bucket, tie-break order, total = sum of buckets, counts preserved, empty -> unrated |
 | `test_fundamentals.py` | NaN/inf rejection, omitted (not zero-filled) cells, period cap, dropping self-contradicting totals, plus accounting identities across every **real cached** balance sheet |
 | `test_symbols.py` | mechanical variants, share-class spellings, accent folding, name similarity, match acceptance/rejection rules, shortest-symbol tie-break, the verified glued-class fallback — all against recorded Yahoo payloads, no network |
-| `test_demand.py` | order-book folding: bid share of resting size, depth summed across every level, mid-price notional, one-sided/zero-price books discarded, thin sessions rejected, EU tickers unscored — against synthetic records, no network, no key |
+| `test_demand.py` | money flow (close at high/low/mid, volume weighting, flat and zero-volume bars skipped, window cut-off, EU coverage) and order-book folding (bid share of resting size, depth summed across levels, mid-price notional, one-sided books discarded, thin sessions rejected) — synthetic data, no network, no key |
+| `test_short_volume.py` | FINRA file parsing: short/total percentage, header and `Total` footer ignored, impossible rows dropped rather than repaired, case-insensitive and dotted-share-class lookup, EU tickers unreadable, empty file — no network |
 | `test_universe.py` | Wikipedia -> Yahoo ticker construction, unmapped-country drops, and the pipeline's missing-ticker recovery (base retry, name search, no-collision renames, unresolvable rows left alone) |
 | `test_report_numbers.py` | re-derives every figure in the generated `report.html`: distance % and drawdown % from their inputs, support below last close and within threshold, analyst total = sum of buckets, consensus = winning bucket, Buy/Strong Buy filter, score reproducible from its components (implied momentum must land in 0..1), ranking order, and every rendered cell matching the embedded detail payload |
 
@@ -409,11 +475,13 @@ whole feed is fetched once and cached to `.cache/apewisdom/map.json` for 6 h.
 
 ```
 Score | Ticker | Name | Market | Last | Support | Dist % | 52w High |
-Drawdown | Days since high | Rating | # Analysts | Community | Demand | Reasons
+Drawdown | Days since high | Rating | # Analysts | Community | Demand |
+Short % | Reasons
 ```
 
-`Score` (first), `Community` and `Demand` (numeric, 0–100) and `Reasons` (last)
-are additions; the middle columns match the base skill's exact order.
+`Score` (first), `Community` and `Demand` (numeric, 0–100), `Short %` and
+`Reasons` (last) are additions; the middle columns match the base skill's exact
+order. `Short %` renders `n/a` for EU rows rather than a fabricated zero.
 
 ## Updated project layout (additions)
 
@@ -421,7 +489,8 @@ are additions; the middle columns match the base skill's exact order.
 src/
 ├── signals.py       # composite score + per-signal breakdown + reasons
 ├── community.py     # ApeWisdom attention signal (US only), cached 6 h
-├── demand.py        # Databento order-book demand (US only), cached 24 h
+├── demand.py        # buy-side demand: CMF (default) or Databento order book
+├── short_volume.py  # FINRA daily short volume (US only), cached 24 h
 ├── fundamentals.py  # Yahoo balance sheet for the detail panel, cached 24 h
 ├── symbols.py       # Wikipedia ticker -> Yahoo symbol resolution, cached 30 d
 └── ...              # config, universe, prices, support, ratings, report, main
@@ -431,14 +500,23 @@ src/
 ├── fundamentals/    # balance sheets, 24 h
 ├── symbols/         # Yahoo symbol search results, 30 d
 ├── demand/          # order-book summaries, 24 h
+├── finra/           # daily short-volume map, 24 h
 └── apewisdom/       # community map, 6 h
 ```
 
-## Buy-side demand signal (`src/demand.py`, Databento)
+## Buy-side demand signal (`src/demand.py`)
 
-The provider chosen for this build is **Databento** (`DEMAND_PROVIDER=databento`).
-It is the only one of the three free/trial options that can serve real
-multi-level depth rather than IEX top-of-book.
+Two providers are implemented; `DEMAND_PROVIDER` selects one.
+
+**`derived` (default, active in this build).** Chaikin Money Flow over the
+20 most recent daily bars, taken from the history already downloaded for the
+support algorithm. No API, no key, no account, and it is the only demand
+provider that covers **EU tickers**. The reason string reads e.g.
+`Flow: 60% buy-side ▲ (+7.9M sh / +2.5B per day)` — quantity *and* value.
+Honest about its nature: it infers direction from where each close landed
+inside its bar, so it is weaker evidence than a real book.
+
+**`databento`.** Real resting-order depth.
 
 - Key from `DATABENTO_API_KEY`; sign up at `https://databento.com/signup` for
   $125 of historical credits (expire after 6 months, one set per team).
@@ -449,12 +527,18 @@ multi-level depth rather than IEX top-of-book.
 - Samples the most recent available session (Databento embargoes the last day on
   the historical API), folds every snapshot into one summary, and caches it to
   `.cache/demand/{symbol}.json` for 24 h. Empty results are cached too.
-- Sub-score = bid share of resting size, already 0..1. Reason string reads e.g.
-  `Book: 58% bid-side ▲ (1.2k sh / 264k resting to buy)` — quantity *and* value.
-- US-only and fully optional: no key, no SDK, or a suffixed EU ticker yields a
-  neutral 0.5 and no reason. `python -m src.main` runs unchanged without it.
-- The key never reaches a URL, a cache file, or a log line; failures are logged
-  as the exception type only.
+- US-only; the key never reaches a URL, a cache file, or a log line.
+
+Either way the signal is fully optional: no data yields a neutral 0.5 and no
+reason, and `python -m src.main` runs unchanged.
+
+## Short-sale volume (`src/short_volume.py`, FINRA)
+
+One free public file per trading day, no account, ~12,300 US symbols. Walks
+back up to 7 days to skip weekends, holidays and the publication lag, then
+caches the whole map for 24 h. Rendered as the `Short %` column and in the
+detail panel; **deliberately excluded from the composite score** because a high
+reading is ambiguous (bearish pressure or squeeze fuel). EU rows show `n/a`.
 
 ## Known data-quality notes
 

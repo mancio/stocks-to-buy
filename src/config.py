@@ -25,7 +25,7 @@ except ValueError:
     NEAR_THRESHOLD_PCT = 5.0
 
 # Buy-side demand (order-book) provider. "none" disables the signal entirely.
-DEMAND_PROVIDER: str = os.getenv("DEMAND_PROVIDER", "databento").strip().lower()
+DEMAND_PROVIDER: str = os.getenv("DEMAND_PROVIDER", "derived").strip().lower()
 DATABENTO_API_KEY: str = os.getenv("DATABENTO_API_KEY", "").strip()
 DATABENTO_DATASET: str = os.getenv("DATABENTO_DATASET", "XNAS.ITCH").strip()
 # bbo-1m is ~390 records/symbol/session; mbp-10 is orders of magnitude larger.
@@ -43,6 +43,7 @@ APEWISDOM_CACHE_DIR = CACHE_DIR / "apewisdom"
 FUNDAMENTALS_CACHE_DIR = CACHE_DIR / "fundamentals"
 SYMBOLS_CACHE_DIR = CACHE_DIR / "symbols"
 DEMAND_CACHE_DIR = CACHE_DIR / "demand"
+FINRA_CACHE_DIR = CACHE_DIR / "finra"
 CACHE_TTL_SECONDS = 24 * 60 * 60  # 24 hours
 SYMBOL_CACHE_TTL_SECONDS = 30 * 24 * 60 * 60  # symbol names change rarely
 

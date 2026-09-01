@@ -24,7 +24,7 @@ _TAG_RE = re.compile(r"<[^>]+>")
 
 # Payload keys the report-level tests re-derive; a report generated before a
 # signal was added is stale rather than wrong, so those tests skip.
-_EXPECTED_KEYS = {"score", "community", "demand"}
+_EXPECTED_KEYS = {"score", "community", "demand", "short_pct"}
 
 
 def _text(markup: str) -> str:
