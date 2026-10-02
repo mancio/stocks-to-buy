@@ -12,6 +12,7 @@
     margin: 0; padding: 24px; color: #1a1a1a; background: #fafafa;
   }
   h1 { font-size: 20px; margin: 0 0 4px; }
+  .updated { font-size: 13px; color: #444; margin-bottom: 4px; }
   .sub { color: #666; font-size: 13px; margin-bottom: 16px; }
   table { border-collapse: collapse; width: 100%; background: #fff; font-size: 13px; }
   thead th {
@@ -92,6 +93,7 @@
 </head>
 <body>
   <h1>Stocks Near Support</h1>
+  <div class="updated">Last updated <time datetime="{{ generated_iso }}">{{ generated_local }}</time> (Warsaw time)</div>
   <div class="sub">{{ row_count }} rows &middot; {{ us_count }} US &middot; {{ eu_count }} EU &middot; near-support threshold &le; {{ threshold }}% &middot; ranked by composite Score</div>
   <div class="hint">Click a row to keep it highlighted (only one row at a time). Click a ticker or company name to open its details: balance sheet with short- and long-term assets/liabilities, plus the analyst buy/sell breakdown.</div>
 
