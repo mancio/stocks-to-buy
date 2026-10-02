@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
@@ -20,6 +21,7 @@ _RATING_CLASS = {
 
 TEMPLATE_DIR = config.ROOT / "templates"
 OUTPUT_PATH = config.ROOT / "report.html"
+DISPLAY_TZ = ZoneInfo("Europe/Warsaw")
 
 
 def _detail_payload(row: dict) -> dict:
@@ -77,6 +79,7 @@ def render_report(rows: list[dict], out_path: Path = OUTPUT_PATH) -> Path:
     us_count = sum(1 for r in enriched if r["market"] == "US")
     eu_count = sum(1 for r in enriched if r["market"] == "EU")
 
+    now = datetime.now(timezone.utc)
     html = template.render(
         rows=enriched,
         details={r["ticker"]: _detail_payload(r) for r in enriched},
@@ -85,7 +88,9 @@ def render_report(rows: list[dict], out_path: Path = OUTPUT_PATH) -> Path:
         us_count=us_count,
         eu_count=eu_count,
         threshold=config.NEAR_THRESHOLD_PCT,
-        generated_utc=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+        generated_utc=now.strftime("%Y-%m-%d %H:%M:%S"),
+        generated_iso=now.isoformat(timespec="seconds"),
+        generated_local=now.astimezone(DISPLAY_TZ).strftime("%d/%m/%Y %H:%M"),
     )
     out_path.write_text(html, encoding="utf-8")
     return out_path
